@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 
 //--------------------|
 //------Typedefs------|
@@ -64,6 +65,7 @@ uint64_t esp_size = 1024*1024*33; 	//33Mib
 uint64_t data_size = 1024*1024*1;	//1Mib
 uint64_t image_size = 0;		// I calculate It later
 uint64_t image_size_lbas = 0, esp_size_lbas = 0, data_size_lbas = 0;
+uint32_t crc_table[256];		// CRC table. don't touch!
 
 //-----------------------------|
 //----Convert-Bytes-To-LBAs----|
@@ -114,6 +116,44 @@ GUID generate_guid(void) {
 	
 
 	return result;
+}
+
+//------------------------------|
+//----Create-New-CRC32-Table----|
+//------------------------------|
+void create_new_crc32_table(void) {
+  uint32_t c;
+
+  for (uint32_t n = 0; n < 256; n++) {
+    c = (uint32_t) n;
+    for (int32_t k = 0; k < 8; k++) {
+      if (c & 1)
+        c = 0xedb88320L ^ (c >> 1);
+      else
+        c = c >> 1;
+    }
+    crc_table[n] = c;
+  }
+}
+
+//------------------------------|
+//----Create-New-CRC32-Table----|
+//------------------------------|
+uint32_t calculate_crc32_table(void *buf, int32_t len) {
+	static bool made_crc_table = false;
+	uint32_t c = 0xFFFFFFFFL;
+	uint8_t *bufp = buf;
+
+	if (!made_crc_table) {
+		create_new_crc32_table();
+		made_crc_table = true;
+	}
+
+ 	for (int32_t n = 0; n < len; n++) {
+		c = crc_table[(c ^ bufp[n]) & 0xff] ^ (c >> 8);
+  	}
+
+	return c ^ 0xFFFFFFFFL;
 }
 
 //---------------------------|
@@ -186,6 +226,9 @@ int main(void) {
 	//Set values
 	image_size = esp_size + data_size + (1024*1024); // ESP + DATA + extra padding
 	image_size_lbas = bytes_to_lbas(image_size);
+
+	// Seed random number generation
+	srand(time(NULL));
 
 	// Write Prtoective MBR
 	if (!write_mbr(image)) {
