@@ -45,7 +45,7 @@ uint64_t bytes_to_lbas(const uint64_t bytes) {
 //-----------------------------|
 //----Pad 0s to full LBAs------|
 //-----------------------------|
-uint64_t wite_full_lba(FILE* image) {
+uint64_t write_full_lba(FILE* image) {
 	uint64_t zero_sector[512];
 	for (uint8_t i = 0; i < (lba_size - sizeof zero_sector) / sizeof zero_sector; i++) {
 		fwrite(&zero_sector, sizeof zero_sector, 1, image);
