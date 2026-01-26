@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
+#include <uchar.h>
 
 //--------------------|
 //------Typedefs------|
@@ -56,16 +57,43 @@ typedef struct {
 	uint8_t reserved_2[512-92];
 } __attribute__ ((packed)) GPT_Header;
 
+// GPT Partition Entry
+typedef struct {
+	GUID partition_type_guid;
+	GUID unique_guid;
+	uint64_t starting_lba;
+	uint64_t ending_lba;
+	uint64_t attributes;
+	char16_t name[36];
+} __attribute__ ((packed)) GPT_Partition_Entry;
+
+//---------------------|
+//---Enums, Constans---|
+//---------------------|
+enum {
+	GPT_TABLE_ENTRY_SIZE = 128,
+	NUMBER_OF_GPT_TABLE_ENTRIES = 128,
+	GPT_TABLE_SIZE = 16384,
+	ALIGNMENT = 1048576,
+};
+
+const GUID ESP_GUID = { 0xC12A7328, 0xF81F, 0x11D2, 0xBA, 0x4B,
+			{ 0x00, 0xA0, 0xC9, 0x3B} };
+
+const GUID BDP_GUID = { 0xEBD0A0A2, 0xB9E5, 0x4433, 0x87, 0xC0,
+			{ 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7 } };
+
 //-----------------------------|
 //-----------Values------------|
 //-----------------------------|
-char* image_name = "ValOS.img";
-uint64_t lba_size = 512;
-uint64_t esp_size = 1024*1024*33; 	//33Mib
-uint64_t data_size = 1024*1024*1;	//1Mib
-uint64_t image_size = 0;		// I calculate It later
-uint64_t image_size_lbas = 0, esp_size_lbas = 0, data_size_lbas = 0;
-uint32_t crc_table[256];		// CRC table. don't touch!
+char* image_name = "ValOS.img";						// Name of Disk
+uint64_t lba_size = 512;						// Size of LBA
+uint64_t esp_size = 1024*1024*33; 					//33Mib
+uint64_t data_size = 1024*1024*1;					//1Mib
+uint64_t image_size = 0;						// I calculate It later
+uint64_t image_size_lbas = 0, esp_size_lbas = 0, data_size_lbas = 0;	// Sizes in LBAs
+uint32_t crc_table[256];						// CRC table. don't touch!
+uint64_t align_lba = 0, esp_lba = 0, data_lba = 0;			// First lba values
 
 //-----------------------------|
 //----Convert-Bytes-To-LBAs----|
@@ -156,6 +184,10 @@ uint32_t calculate_crc32_table(void *buf, int32_t len) {
 	return c ^ 0xFFFFFFFFL;
 }
 
+uint64_t get_next_aligned_lba(const uint64_t lba) {
+	return lba - (lba % align_lba) + align_lba;
+}
+
 //---------------------------|
 //---Write-Protective-MBR----|
 //---------------------------|
@@ -209,6 +241,28 @@ bool write_gpts(FILE* image) {
 		.reserved_2 = { 0 },
 	};
 
+	// Fill out primary table partition entries
+	GPT_Partition_Entry gpt_table[NUMBER_OF_GPT_TABLE_ENTRIES] = {
+		// ESP (aka. EFI system partition)
+		{
+			.partition_type_guid = ESP_GUID,
+			.unique_guid = generate_guid(),
+			.starting_lba = esp_lba,
+			.ending_lba = esp_lba + esp_size_lbas,
+			.attributes = 0,
+			.name = u"ESP"
+		},
+		// BDP (aka. Basic data partition)
+		{
+			.partition_type_guid = BDP_GUID,
+			.unique_guid = generate_guid(),
+			.starting_lba = data_lba,
+			.ending_lba = data_lba + data_size_lbas,
+			.attributes = 0,
+			.name = u"BDP",
+		},
+	};
+
 	return true;
 }
 
@@ -226,6 +280,11 @@ int main(void) {
 	//Set values
 	image_size = esp_size + data_size + (1024*1024); // ESP + DATA + extra padding
 	image_size_lbas = bytes_to_lbas(image_size);
+	align_lba = ALIGNMENT / lba_size;
+	esp_lba = align_lba;
+	esp_size_lbas = bytes_to_lbas(esp_size);
+	data_size_lbas = bytes_to_lbas(data_size);
+	data_lba = get_next_aligned_lba(esp_lba + esp_size_lbas);
 
 	// Seed random number generation
 	srand(time(NULL));
