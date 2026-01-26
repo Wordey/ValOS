@@ -42,10 +42,24 @@ uint64_t bytes_to_lbas(const uint64_t bytes) {
 	return (bytes / lba_size) + (bytes % lba_size > 0 ? 1 : 0);
 }
 
+//-----------------------------|
+//----Pad 0s to full LBAs------|
+//-----------------------------|
+uint64_t wite_full_lba(FILE* image) {
+	uint64_t zero_sector[512];
+	for (uint8_t i = 0; i < (lba_size - sizeof zero_sector) / sizeof zero_sector; i++) {
+		fwrite(&zero_sector, sizeof zero_sector, 1, image);
+	}
+}
+
+
 //---------------------------|
 //---Write-Protective-MBR----|
 //---------------------------|
 bool write_mbr(FILE* image) {
+	uint64_t mbr_image_lbas = image_size_lbas;
+	if (mbr_image_lbas > 0xFFFFFFFF) mbr_image_lbas = 0x100000000;
+
 	MBR mbr = {
 		.boot_code = { 0 },
 		.mbr_signature = 0,
@@ -56,7 +70,7 @@ bool write_mbr(FILE* image) {
 			.os_type = 0xEE,
 			.ending_chs = { 0xFF, 0xFF, 0xFF },
 			.starting_lba = 0x0000001,
-			.size_lba = image_size_lbas - 1,
+			.size_lba = mbr_image_lbas - 1,
 		},
 		.boot_signature = 0xAA55,
 	};
@@ -64,6 +78,7 @@ bool write_mbr(FILE* image) {
 	if (fwrite(&mbr, 1, sizeof mbr, image) != sizeof mbr) {
 		return false;
 	}
+	write_full_lba(image);
 
 	return true;
 }
@@ -82,6 +97,7 @@ int main(void) {
 	image_size = esp_size + data_size + (1024*1024); // ESP + DATA + extra padding
 	image_size_lbas = bytes_to_lbas(image_size);
 
+	// Write Prtoective MBR
 	if (!write_mbr(image)) {
 		fprintf(stderr, "ERROR: Cannot create Protective MBR Fot disk!\n");
 		return EXIT_FAILURE;
