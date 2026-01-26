@@ -6,6 +6,11 @@
 //--------------------|
 //------Typedefs------|
 //--------------------|
+// GUID(aka. UUID)
+typedef struct {
+	uint8_t time_low;
+} __attribute__ ((packed)) GUID;
+
 //MBR Partition
 typedef struct {
 	uint8_t boot_indicator;
@@ -25,6 +30,26 @@ typedef struct {
 	uint16_t boot_signature;
 } __attribute__ ((packed)) MBR;
 
+// GPT Header
+typedef struct {
+	uint8_t signature[8];
+	uint32_t revision;
+	uint32_t header_size;
+	uint32_t header_crc32;
+	uint32_t reserved;
+	uint64_t my_lba;
+	uint64_t alternate_lba;
+	uint64_t first_usable_lba;
+	uint64_t last_usable_lba;
+	GUID disk_guid;
+	uint64_t partition_table_lba;
+	uint32_t number_of_entries;
+	uint32_t size_of_entry;
+	uint32_t partition_table_crc32;
+
+	uint8_t reserved_2[512-92];
+} __attribute__ ((packed)) GPT_Header;
+
 //-----------------------------|
 //-----------Values------------|
 //-----------------------------|
@@ -43,15 +68,20 @@ uint64_t bytes_to_lbas(const uint64_t bytes) {
 }
 
 //-----------------------------|
-//----Pad 0s to full LBAs------|
+//----Pad-0s-to-full-LBAs------|
 //-----------------------------|
-uint64_t write_full_lba(FILE* image) {
+void write_full_lba(FILE* image) {
 	uint64_t zero_sector[512];
 	for (uint8_t i = 0; i < (lba_size - sizeof zero_sector) / sizeof zero_sector; i++) {
 		fwrite(&zero_sector, sizeof zero_sector, 1, image);
 	}
 }
 
+//---------------------------|
+//---Generate-New-GUID-------|
+//---------------------------|
+uint64_t generate_guid() {
+}
 
 //---------------------------|
 //---Write-Protective-MBR----|
@@ -78,7 +108,27 @@ bool write_mbr(FILE* image) {
 	if (fwrite(&mbr, 1, sizeof mbr, image) != sizeof mbr) {
 		return false;
 	}
-	write_full_lba(image);
+	//write_full_lba(image);
+
+	return true;
+}
+
+//---------------------------------|
+//---Write-GPT-Headers-&&-Tables---|
+//---------------------------------|
+bool write_gpts(FILE* image) {
+	GPT_Header primary_gpt = {
+		.signature = { "EFI PART" },
+		.revision = 0x00010000,
+		.header_size = 92,
+		.header_crc32 = 0,	// I calculate it later
+		.reserved = 0,
+		.my_lba = 1,
+		.alternate_lba = image_size_lbas - 1,
+		.first_usable_lba = 1 + 1 + 32,		// MBR + GPT + primary gpt table
+		.last_usable_lba = image_size_lbas - 1 - 1 - 32,	// image_size_lbas - MBR - GPT - primary gpt table
+		.disk_guid = generate_guid(),
+	};
 
 	return true;
 }
@@ -88,6 +138,7 @@ bool write_mbr(FILE* image) {
 //---------------------|
 int main(void) {
 	FILE* image = fopen(image_name, "wb+");
+
 	if (!image) {
 		fprintf(stderr, "ERROR: Cannot create new disk image!\n");
 		return EXIT_FAILURE;
@@ -99,7 +150,13 @@ int main(void) {
 
 	// Write Prtoective MBR
 	if (!write_mbr(image)) {
-		fprintf(stderr, "ERROR: Cannot create Protective MBR Fot disk!\n");
+		fprintf(stderr, "ERROR: Cannot create Protective MBR For disk!\n");
+		return EXIT_FAILURE;
+	}
+
+	// Write GPT Headers && Tables
+	if (!write_gpts(image)) {
+		fprintf(stderr, "ERROR: Cannot create GPT Headers && Tables For disk!\n");
 		return EXIT_FAILURE;
 	}
 
