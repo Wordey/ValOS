@@ -8,7 +8,12 @@
 //--------------------|
 // GUID(aka. UUID)
 typedef struct {
-	uint8_t time_low;
+	uint32_t time_low;
+	uint16_t time_mid;
+	uint16_t time_hi_and_ver;
+	uint8_t clock_seq_hi_and_res;
+	uint8_t clock_seq_low;
+	uint8_t node[6];
 } __attribute__ ((packed)) GUID;
 
 //MBR Partition
@@ -79,7 +84,36 @@ void write_full_lba(FILE *image) {
 //---------------------------|
 //---Generate-New-GUID-------|
 //---------------------------|
-uint64_t generate_guid() {
+GUID generate_guid(void) {
+	uint8_t rand_arr[16] = { 0 };
+
+	for (uint8_t i = 0; i < sizeof rand_arr; i++) {
+		rand_arr[i] = rand() % (UINT8_MAX + 1);
+	}
+
+	// GUIDs fill out
+	GUID result = {
+		.time_low 		= *(uint32_t *)&rand_arr[0],
+		.time_mid 	 	= *(uint16_t *)&rand_arr[4],
+		.time_hi_and_ver 	= *(uint16_t *)&rand_arr[6],
+		.clock_seq_hi_and_res	= rand_arr[8],
+		.clock_seq_low		= rand_arr[9],
+		.node			= {	rand_arr[10], rand_arr[11], rand_arr[12], rand_arr[13],
+						rand_arr[14], rand_arr[15] },
+	};
+
+	// versions bits fill out
+	result.time_hi_and_ver &= ~(1 << 15);
+	result.time_hi_and_ver |= (1 << 14);
+	result.time_hi_and_ver &= ~(1 << 13);
+
+	// variants bits fill out
+	result.clock_seq_hi_and_res |= (1 << 7);
+	result.clock_seq_hi_and_res |= (1 << 6);
+	result.clock_seq_hi_and_res &= ~(1 << 5);
+	
+
+	return result;
 }
 
 //---------------------------|
