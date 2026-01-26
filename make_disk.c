@@ -127,6 +127,12 @@ bool write_gpts(FILE* image) {
 		.first_usable_lba = 1 + 1 + 32,		// MBR + GPT + primary gpt table
 		.last_usable_lba = image_size_lbas - 1 - 1 - 32,	// image_size_lbas - MBR - GPT - primary gpt table
 		.disk_guid = generate_guid(),
+		.partition_table_lba = 2,
+		.number_of_entries = 128,
+		.size_of_entry = 128,
+		.partition_table_crc32 = 0, // I calculate it later
+
+		.reserved_2 = { 0 },
 	};
 
 	return true;
