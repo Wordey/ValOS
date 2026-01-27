@@ -95,6 +95,8 @@ uint64_t image_size_lbas = 0, esp_size_lbas = 0, data_size_lbas = 0;	// Sizes in
 uint32_t crc_table[256];						// CRC table. don't touch!
 uint64_t align_lba = 0, esp_lba = 0, data_lba = 0;			// First lba values
 
+
+
 //-----------------------------|
 //----Convert-Bytes-To-LBAs----|
 //-----------------------------|
@@ -248,7 +250,7 @@ bool write_gpts(FILE* image) {
 			.partition_type_guid = ESP_GUID,
 			.unique_guid = generate_guid(),
 			.starting_lba = esp_lba,
-			.ending_lba = esp_lba + esp_size_lbas,
+			.ending_lba = esp_lba + esp_size_lbas - 1,
 			.attributes = 0,
 			.name = u"ESP"
 		},
@@ -257,11 +259,56 @@ bool write_gpts(FILE* image) {
 			.partition_type_guid = BDP_GUID,
 			.unique_guid = generate_guid(),
 			.starting_lba = data_lba,
-			.ending_lba = data_lba + data_size_lbas,
+			.ending_lba = data_lba + data_size_lbas - 1,
 			.attributes = 0,
 			.name = u"BDP",
 		},
 	};
+
+	// Fill out primary header crc32 values
+	primary_gpt.partition_table_crc32 = calculate_crc32_table(gpt_table, sizeof gpt_table);
+	primary_gpt.header_crc32 = calculate_crc32_table(&primary_gpt, primary_gpt.header_size);
+
+	// Write primary header to file
+	if(fwrite(&primary_gpt, 1, sizeof primary_gpt, image) != sizeof primary_gpt)
+		return false;
+	write_full_lba(image);
+
+	// Write primary gpt table to file
+	if(fwrite(&gpt_table, 1, sizeof gpt_table, image) != sizeof gpt_table)
+		return false;
+
+	// secondary's gpt's Fill out
+	GPT_Header secondary_gpt = primary_gpt;
+
+	secondary_gpt.header_crc32 = 0;
+	secondary_gpt.partition_table_crc32 = 0;
+	secondary_gpt.my_lba = primary_gpt.alternate_lba;
+	secondary_gpt.alternate_lba = primary_gpt.my_lba;
+	secondary_gpt.partition_table_lba = image_size_lbas - 33;
+
+	// Fill out secondary header crc32 values
+	secondary_gpt.partition_table_crc32 = calculate_crc32_table(gpt_table, sizeof gpt_table);
+	secondary_gpt.header_crc32 = calculate_crc32_table(&secondary_gpt, secondary_gpt.header_size);
+
+
+	// Go to position of secondary gpt
+	fseek(image, (secondary_gpt.partition_table_lba * lba_size), SEEK_SET);
+
+	// Write primary gpt table to file
+	if(fwrite(&secondary_gpt, 1, sizeof secondary_gpt, image) != sizeof secondary_gpt)
+		return false;
+	write_full_lba(image);
+
+	// Write Backups
+	fseek(image, secondary_gpt.partition_table_lba * lba_size, SEEK_SET);
+	if (fwrite(&gpt_table, 1, sizeof gpt_table, image) != sizeof gpt_table)
+		return false;
+
+	fseek(image, secondary_gpt.my_lba * lba_size, SEEK_SET);
+	if (fwrite(&secondary_gpt, 1, sizeof secondary_gpt, image) != sizeof secondary_gpt)
+		return false;
+
 
 	return true;
 }
@@ -278,13 +325,22 @@ int main(void) {
 	}
 
 	//Set values
-	image_size = esp_size + data_size + (1024*1024); // ESP + DATA + extra padding
+	const uint64_t padding = (ALIGNMENT * 2 + (lba_size * 67));
+	image_size = esp_size + data_size + padding; // ESP + DATA + extra padding
 	image_size_lbas = bytes_to_lbas(image_size);
 	align_lba = ALIGNMENT / lba_size;
 	esp_lba = align_lba;
 	esp_size_lbas = bytes_to_lbas(esp_size);
 	data_size_lbas = bytes_to_lbas(data_size);
 	data_lba = get_next_aligned_lba(esp_lba + esp_size_lbas);
+	image_size_lbas = data_lba + data_size_lbas + 34;
+
+	// Need for no errors in sgdisk DON'T TOUCH!
+	fseek(image, (image_size_lbas * lba_size) - 1, SEEK_SET);
+    	fputc(0, image);
+    	rewind(image);
+
+
 
 	// Seed random number generation
 	srand(time(NULL));
