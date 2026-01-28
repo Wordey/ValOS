@@ -4,7 +4,7 @@
 TARGET = make_disk
 CC = clang
 #CC = gcc
-CFLAGS = -std=c17 -Wextra -Wpedantic -O2
+CFLAGS = -std=c17 -Wall -Wextra -Wpedantic -O2
 
 all: $(TARGET)
 

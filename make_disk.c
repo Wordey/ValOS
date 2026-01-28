@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <time.h>
 #include <uchar.h>
+#include <string.h>
 
 //--------------------|
 //------Typedefs------|
@@ -67,6 +68,78 @@ typedef struct {
 	char16_t name[36];
 } __attribute__ ((packed)) GPT_Partition_Entry;
 
+// FAT32 VBR (aka. Volume Boot Record)
+typedef struct {
+	uint8_t BS_jmpBoot[3];
+	uint8_t BS_OEMName[8];
+	uint16_t BPB_BytesPerSec;
+	uint8_t BPB_SecPerClus;
+	uint16_t BPB_RsvdSecCnt;
+	uint8_t BPB_NumFATs;
+	uint16_t BPB_RootEntCnt;
+	uint16_t BPB_TotSec16;
+	uint8_t BPB_Media;
+	uint16_t BPB_FATSz16;
+	uint16_t BPB_SecPerTrk;
+	uint16_t BPB_NumHeads;
+	uint32_t BPB_HiddSec;
+	uint32_t BPB_TotSec32;
+	uint32_t BPB_FATSz32;
+	uint16_t BPB_ExtFlags;
+	uint16_t BPB_FSVer;
+	uint32_t BPB_RootClus;
+	uint16_t BPB_FSInfo;
+	uint16_t BPB_BkBootSec;
+	uint8_t BPB_Reserved[12];
+	uint8_t BS_DrvNum;
+	uint8_t BS_Reserved;
+	uint8_t BS_BootSig;
+	uint8_t BS_VolID[4];
+	uint8_t BS_VolLab[11];
+	uint8_t BS_FilSysType[8];
+
+	uint8_t boot_code[510-90];
+	uint16_t bootsect_sig;
+} __attribute__ ((packed)) VBR;
+
+typedef struct {
+	uint32_t FSI_LeadSig;
+	uint8_t FSI_Reserved[480];
+	uint32_t FSI_StructSig;
+	uint32_t FSI_Free_Count;
+	uint32_t FSI_Nxt_Free;
+	uint8_t FSI_Reserved2[12];
+	uint32_t FSI_TrailSig;
+} __attribute__ ((packed)) FSInfo;
+
+// FAT32 Directory Entry
+typedef struct {
+	uint8_t DIR_Name[11];
+	uint8_t DIR_Attr;
+	uint8_t DIR_NTRes;
+	uint8_t DIR_CrtTimeTenth;
+	uint16_t DIR_CrtTime;
+	uint16_t DIR_CrtDate;
+	uint16_t DIR_LstAccDate;
+	uint16_t DIR_FstClusHI;
+	uint16_t DIR_WrtTime;
+	uint16_t DIR_WrtDate;
+	uint16_t DIR_FstClusLO;
+	uint32_t DIR_FileSize;
+} __attribute__ ((packed)) FAT32_Dir_Entry; 
+
+// FAT32 Dir Attributes
+typedef enum {
+	ATTR_READ_ONLY	= 0x01,
+	ATTR_HIDDEN	= 0x02,
+	ATTR_SYSTEM	= 0x03,
+	ATTR_VOLUME_ID	= 0x08,
+	ATTR_DIRECTORY	= 0x10,
+	ATTR_ARCHIVE	= 0x20,
+	ATTR_LONG_NAME	= ATTR_READ_ONLY | ATTR_HIDDEN |
+			  ATTR_SYSTEM    | ATTR_VOLUME_ID,
+} FAT32_Attributes;
+
 //---------------------|
 //---Enums, Constans---|
 //---------------------|
@@ -91,7 +164,8 @@ uint64_t lba_size = 512;						// Size of LBA
 uint64_t esp_size = 1024*1024*33; 					//33Mib
 uint64_t data_size = 1024*1024*1;					//1Mib
 uint64_t image_size = 0;						// I calculate It later
-uint64_t image_size_lbas = 0, esp_size_lbas = 0, data_size_lbas = 0;	// Sizes in LBAs
+uint64_t image_size_lbas = 0, esp_size_lbas = 0, data_size_lbas = 0,	// 
+	 gpt_table_lbas = 0;						// Sizes in LBAs
 uint32_t crc_table[256];						// CRC table. don't touch!
 uint64_t align_lba = 0, esp_lba = 0, data_lba = 0;			// First lba values
 
@@ -186,8 +260,23 @@ uint32_t calculate_crc32_table(void *buf, int32_t len) {
 	return c ^ 0xFFFFFFFFL;
 }
 
+//--------------------------|
+//----Get-Next-Aligned-LBA--|
+//--------------------------|
 uint64_t get_next_aligned_lba(const uint64_t lba) {
 	return lba - (lba % align_lba) + align_lba;
+}
+
+//------------------------------------|
+//----Get-New-Date/Time-For-FAT32-----|
+//------------------------------------|
+void get_fat_dir_entry_time_and_and_date(uint16_t *in_time, uint16_t *in_date) {
+	time_t curr_time;
+	curr_time = time(NULL);
+	struct tm tm = *localtime(&curr_time);
+	if (tm.tm_sec == 60) tm.tm_sec = 59;
+	*in_time = tm.tm_hour << 11 | tm.tm_min << 5 | (tm.tm_sec / 2);
+	*in_date = ((tm.tm_year - 80) << 9) | ((tm.tm_mon + 1) << 5) | tm.tm_mday;
 }
 
 //---------------------------|
@@ -228,12 +317,12 @@ bool write_gpts(FILE* image) {
 		.signature = { "EFI PART" },
 		.revision = 0x00010000,
 		.header_size = 92,
-		.header_crc32 = 0,	// I calculate it later
+		.header_crc32 = 0,						// I calculate it later
 		.reserved = 0,
 		.my_lba = 1,
 		.alternate_lba = image_size_lbas - 1,
-		.first_usable_lba = 1 + 1 + 32,		// MBR + GPT + primary gpt table
-		.last_usable_lba = image_size_lbas - 1 - 1 - 32,	// image_size_lbas - MBR - GPT - primary gpt table
+		.first_usable_lba = 1 + 1 + gpt_table_lbas,			// MBR + GPT + primary gpt table
+		.last_usable_lba = image_size_lbas - 1 - 1 - gpt_table_lbas,	// image_size_lbas - MBR - GPT - primary gpt table
 		.disk_guid = generate_guid(),
 		.partition_table_lba = 2,
 		.number_of_entries = 128,
@@ -285,7 +374,7 @@ bool write_gpts(FILE* image) {
 	secondary_gpt.partition_table_crc32 = 0;
 	secondary_gpt.my_lba = primary_gpt.alternate_lba;
 	secondary_gpt.alternate_lba = primary_gpt.my_lba;
-	secondary_gpt.partition_table_lba = image_size_lbas - 33;
+	secondary_gpt.partition_table_lba = image_size_lbas - 1 - gpt_table_lbas;
 
 	// Fill out secondary header crc32 values
 	secondary_gpt.partition_table_crc32 = calculate_crc32_table(gpt_table, sizeof gpt_table);
@@ -313,6 +402,174 @@ bool write_gpts(FILE* image) {
 	return true;
 }
 
+//-----------------------------|
+//---Write-ESP-With-FAT32-FS---|
+//-----------------------------|
+bool write_esp(FILE* image) {
+	// ------------------------------ reserved sector region ------------------------------
+	const uint8_t reserved_sector = 32;
+
+	// Fill out VBR
+	VBR vbr = {
+		.BS_jmpBoot = { 0xEB, 0x00, 0x90 },
+		.BS_OEMName = { "VALOS   " },
+		.BPB_BytesPerSec = lba_size,
+		.BPB_SecPerClus = 1,
+		.BPB_RsvdSecCnt = reserved_sector,
+		.BPB_NumFATs = 2,
+		.BPB_RootEntCnt = 0,
+		.BPB_TotSec16 = 0,
+		.BPB_Media = 0xF8,
+		.BPB_FATSz16 = 0,
+		.BPB_SecPerTrk = 0,
+		.BPB_NumHeads = 0,
+		.BPB_HiddSec = esp_lba - 1,
+		.BPB_TotSec32 = esp_size_lbas,
+		.BPB_FATSz32 = (align_lba - reserved_sector) / 2,
+		.BPB_ExtFlags = 0,
+		.BPB_FSVer = 0,
+		.BPB_RootClus = 2,
+		.BPB_FSInfo = 1,
+		.BPB_BkBootSec = 6,
+		.BPB_Reserved = { 0 },
+		.BS_DrvNum = 0x80,
+		.BS_Reserved = 0,
+		.BS_BootSig = 0x29,
+		.BS_VolID = { 0 },
+		.BS_VolLab = { "NO NAME    " },
+		.BS_FilSysType = { "FAT32   " },
+
+		.boot_code = { 0 },
+		.bootsect_sig = 0xAA55,
+	};
+
+	// Fill out FSInfo Sector
+	FSInfo fsinfo = {
+		.FSI_LeadSig = 0x41615252,
+		.FSI_Reserved = { 0 },
+		.FSI_StructSig = 0x61417272,
+		.FSI_Free_Count = 0xFFFFFFFF,
+		.FSI_Nxt_Free = 0xFFFFFFFF,
+		.FSI_Reserved2 = { 0 },
+		.FSI_TrailSig = 0xAA550000,
+	};
+
+	// Write VBR && FSInfo
+	fseek(image, esp_lba * lba_size, SEEK_SET);
+	if (fwrite(&vbr, 1, sizeof vbr, image) != sizeof vbr) {
+		fprintf(stderr, "Error on step writing VBR 1");
+		return false;
+	}
+	write_full_lba(image);
+
+	if (fwrite(&fsinfo, 1, sizeof fsinfo, image) != sizeof fsinfo) {
+		fprintf(stderr, "Error on step writing SYSINFO SEC 1");
+		return false;
+	}
+	write_full_lba(image);
+
+	// Go to Backup Sector
+	fseek(image, (esp_lba + vbr.BPB_BkBootSec) * lba_size, SEEK_SET);
+
+	// Write VBR && FSInfo
+	fseek(image, esp_lba * lba_size, SEEK_SET);
+	if (fwrite(&vbr, 1, sizeof vbr, image) != sizeof vbr) {
+		fprintf(stderr, "Error on step writing VBR 2");
+		return false;
+	}
+	write_full_lba(image);
+
+	if (fwrite(&fsinfo, 1, sizeof fsinfo, image) != sizeof fsinfo) {
+		fprintf(stderr, "Error on step writing SYSINFO SEC 2");
+		return false;
+	}
+	write_full_lba(image);
+
+
+	// ----------------------------------- FAT region --------------------------------------
+	// Write FATs
+	const uint32_t fat_lba = esp_lba + vbr.BPB_RsvdSecCnt;
+	for (uint8_t i = 0; i < vbr.BPB_NumFATs; i++) {
+		fseek(image, (fat_lba  + (i * vbr.BPB_FATSz32)) * lba_size, SEEK_SET);
+
+		uint32_t cluster = 0;
+	
+		// Cluster 0; FAT identifier, lowest 8 bit are the media type/byte
+		cluster = 0xFFFFFF00 | vbr.BPB_Media;
+		fwrite(&cluster, sizeof cluster, 1, image);
+
+		// Cluster 1; EOC marker
+		cluster = 0xFFFFFFFF;
+		fwrite(&cluster, sizeof cluster, 1, image);
+
+		// Cluster 2; Root directory
+		cluster = 0xFFFFFFFF;
+		fwrite(&cluster, sizeof cluster, 1, image);
+
+		// Cluster 3; /EFI
+		cluster = 0xFFFFFFFF;
+		fwrite(&cluster, sizeof cluster, 1, image);
+
+		// Cluster 4; /EFI/BOOT
+		cluster = 0xFFFFFFFF;
+		fwrite(&cluster, sizeof cluster, 1, image);
+	}
+
+	// ----------------------------------- DATA region --------------------------------------
+	// Write data
+	const uint32_t data_lba = fat_lba + (vbr.BPB_NumFATs * vbr.BPB_FATSz32);
+	fseek(image, data_lba * lba_size, SEEK_SET);
+
+	// Root Dir entries
+	// '/EFI'
+	FAT32_Dir_Entry dir_ent = {
+		.DIR_Name = { "EFI        " },
+		.DIR_Attr = ATTR_DIRECTORY,
+		.DIR_NTRes = 0,
+		.DIR_CrtTimeTenth = 0,
+		.DIR_CrtTime = 0,
+		.DIR_CrtDate = 0,
+		.DIR_LstAccDate = 0,
+		.DIR_FstClusHI = 0,
+		.DIR_WrtTime = 0,
+		.DIR_WrtDate = 0,
+		.DIR_FstClusLO = 3,
+		.DIR_FileSize = 0
+	};
+
+	uint16_t create_time = 0, create_date = 0;
+	get_fat_dir_entry_time_and_and_date(&create_time, &create_date);
+
+	dir_ent.DIR_CrtTime = create_time;
+	dir_ent.DIR_CrtDate = create_date;
+	dir_ent.DIR_WrtTime = create_time;
+	dir_ent.DIR_WrtDate = create_date;
+
+	fwrite(&dir_ent, sizeof dir_ent, 1, image);
+
+	// EFI Dir
+	fseek(image, (data_lba + 1) * lba_size, SEEK_SET);
+	memcpy(dir_ent.DIR_Name, ".          ", 11);
+	fwrite(&dir_ent, sizeof dir_ent, 1, image);
+	memcpy(dir_ent.DIR_Name, "..         ", 11);
+	dir_ent.DIR_FstClusLO = 0;
+	fwrite(&dir_ent, sizeof dir_ent, 1, image);
+	memcpy(dir_ent.DIR_Name, "BOOT       ", 11);
+	dir_ent.DIR_FstClusLO = 4;
+	fwrite(&dir_ent, sizeof dir_ent, 1, image);
+
+	// EFI/BOOT dir
+	fseek(image, (data_lba + 2) * lba_size, SEEK_SET);
+	memcpy(dir_ent.DIR_Name, ".          ", 11);
+	fwrite(&dir_ent, sizeof dir_ent, 1, image);
+	memcpy(dir_ent.DIR_Name, "..         ", 11);
+	dir_ent.DIR_FstClusLO = 3;
+	fwrite(&dir_ent, sizeof dir_ent, 1, image);
+
+
+	return true;
+}
+
 //---------------------|
 //--------Main---------|
 //---------------------|
@@ -325,7 +582,9 @@ int main(void) {
 	}
 
 	//Set values
-	const uint64_t padding = (ALIGNMENT * 2 + (lba_size * 67));
+	gpt_table_lbas = GPT_TABLE_SIZE / lba_size;
+
+	const uint64_t padding = (ALIGNMENT * 2 + (lba_size * ((gpt_table_lbas*2)) + 1 + 2));
 	image_size = esp_size + data_size + padding; // ESP + DATA + extra padding
 	image_size_lbas = bytes_to_lbas(image_size);
 	align_lba = ALIGNMENT / lba_size;
@@ -354,6 +613,12 @@ int main(void) {
 	// Write GPT Headers && Tables
 	if (!write_gpts(image)) {
 		fprintf(stderr, "ERROR: Cannot create GPT Headers && Tables For disk!\n");
+		return EXIT_FAILURE;
+	}
+
+	// Write ESP with FAT32 FS
+	if (!write_esp(image)) {
+		fprintf(stderr, "ERROR: Cannot write ESP With FAT32 For disk!\n");
 		return EXIT_FAILURE;
 	}
 
